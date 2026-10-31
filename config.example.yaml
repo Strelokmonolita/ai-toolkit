@@ -1,0 +1,35 @@
+# Образец. Скопируй в config.yaml и поправь под себя.
+# Ключи сюда НЕ пишем, они лежат в файле .env
+
+default_profile: claude   # какой профиль брать, если не указан --profile
+
+settings:
+  chunk_tokens: 30000        # максимум токенов кода в одной части
+  max_output_tokens: 4096    # максимум токенов в ответе нейросети (на каждую часть)
+  timeout_seconds: 120       # сколько ждать ответ
+
+profiles:
+  claude:
+    type: anthropic          # библиотека anthropic
+    base_url: https://api.anthropic.com   # без /v1; при своём прокси впиши его адрес
+    key_env: CLAUDE_KEY      # имя переменной в .env
+    model: claude-sonnet-5-5
+    # anthropic_version: "2023-06-01"   # если прокси ругается на версию API
+
+  deepseek:
+    type: openai             # openai-совместимый API
+    base_url: https://api.deepseek.com
+    key_env: DEEPSEEK_KEY
+    model: deepseek-chat
+
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    key_env: OPENROUTER_KEY
+    model: нужно проверить название модели на openrouter.ai
+
+  local:                     # Ollama / LM Studio на своём компьютере
+    type: openai
+    base_url: http://localhost:11434/v1   # у LM Studio обычно http://localhost:1234/v1
+    key_env: NONE            # NONE = ключ не нужен
+    model: llama3
