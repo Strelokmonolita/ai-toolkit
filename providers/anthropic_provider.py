@@ -1,6 +1,6 @@
 """Провайдер для Claude (и прокси, совместимых с Anthropic API)."""
 
-from .base import Provider, ToolkitError, translate_error
+from .base import Provider, Reply, ToolkitError, translate_error
 
 
 class AnthropicProvider(Provider):
@@ -54,4 +54,4 @@ class AnthropicProvider(Provider):
             "cache_creation_input_tokens": cache_write,
             "cache_read_input_tokens": cache_read,
         }
-        return text, usage
+        return Reply(text, usage, truncated=resp.stop_reason == "max_tokens")

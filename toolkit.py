@@ -11,6 +11,7 @@ from pathlib import Path
 from providers import TYPES, ToolkitError, create_provider
 
 BASE_DIR = Path(__file__).resolve().parent
+VERSION = "0.2.0"
 DEFAULTS = {"chunk_tokens": 30000, "max_output_tokens": 4096, "timeout_seconds": 120}
 
 
@@ -42,6 +43,8 @@ def get_profile(cfg, name):
             f"Профиль '{name}' не найден в config.yaml. Есть: {', '.join(profiles)}."
         )
     profile = profiles[name]
+    if not isinstance(profile, dict):
+        raise ToolkitError(f"Профиль '{name}' в config.yaml должен содержать поля type, base_url и т.д.")
     for field in ("type", "base_url", "key_env", "model"):
         if not profile.get(field):
             raise ToolkitError(f"В профиле '{name}' не заполнено поле {field}.")
@@ -82,7 +85,60 @@ def positive_int(settings, name):
         raise ToolkitError(f"В config.yaml параметр {name} должен быть целым числом больше 0.")
 
 
-def main():
+class _Parser(argparse.ArgumentParser):
+    """При ошибке аргументов выходит с кодом 1: код 2 оставлен за --fail-on."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: ошибка: {message}\n")
+
+
+def build_parser():
+    # Общие флаги нужны и до, и после подкоманды. У подкоманд default=SUPPRESS,
+    # чтобы не затирать значение, заданное до подкоманды.
+    def common(suppress):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("--profile", default=argparse.SUPPRESS if suppress else None,
+                       help="имя профиля из config.yaml")
+        p.add_argument("--config", default=argparse.SUPPRESS if suppress else str(BASE_DIR / "config.yaml"),
+                       help="путь к конфигу")
+        return p
+
+    parser = _Parser(description="ai-toolkit: работа с любой нейросетью",
+                                     parents=[common(False)])
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    sub = parser.add_subparsers(dest="command", required=True)
+    rev = sub.add_parser("review", help="проверить код файла или папки",
+                         parents=[common(True)])
+    rev.add_argument("path", help="файл или папка")
+    rev.add_argument("-y", "--yes", action="store_true",
+                     help="не задавать вопросов, сразу отправлять в нейросеть")
+    rev.add_argument("--output", metavar="PATH",
+                     help="файл отчёта (или папка, если путь существует как папка)")
+    rev.add_argument("--format", choices=("md", "json"), default="md", help="формат отчёта")
+    rev.add_argument("--fail-on", choices=("high", "medium", "low"), default=None,
+                     help="код возврата 2, если есть находки этого уровня или выше")
+    rev.add_argument("--exclude", metavar="PATTERN", action="append",
+                     help="не проверять пути по glob-шаблону (относительно папки); можно несколько раз")
+    rev.add_argument("--changed", action="store_true",
+                     help="проверить только файлы, изменённые относительно --base (git)")
+    rev.add_argument("--base", metavar="REF", default=None,
+                     help="git-ref для --changed, по умолчанию HEAD; без --changed не работает")
+    rev.set_defaults(_parser=rev)  # main() вызывает его error(), чтобы показать usage review
+    sub.add_parser("profiles", help="показать профили из конфига",
+                   parents=[common(True)])
+    return parser
+
+
+def list_profiles(cfg):
+    default = cfg.get("default_profile") or next(iter(cfg["profiles"]))
+    for name, profile in cfg["profiles"].items():
+        profile = profile if isinstance(profile, dict) else {}
+        mark = " (по умолчанию)" if name == default else ""
+        print(f"{name}{mark}: type={profile.get('type', '?')}, model={profile.get('model', '?')}")
+
+
+def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")
@@ -97,21 +153,24 @@ def main():
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description="ai-toolkit: работа с любой нейросетью")
-    parser.add_argument("--profile", default=None, help="имя профиля из config.yaml")
-    parser.add_argument("--config", default=str(BASE_DIR / "config.yaml"), help="путь к конфигу")
-    sub = parser.add_subparsers(dest="command", required=True)
-    rev = sub.add_parser("review", help="проверить код файла или папки")
-    rev.add_argument("path", help="файл или папка")
-    args = parser.parse_args()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "base", None) and not args.changed:
+        args._parser.error("--base нужен вместе с --changed")
 
     try:
         cfg = load_config(Path(args.config))
+        if args.command == "profiles":
+            list_profiles(cfg)
+            return
         name = args.profile or cfg.get("default_profile") or next(iter(cfg["profiles"]))
         profile = get_profile(cfg, name)
 
+        user_settings = cfg.get("settings") or {}
+        if not isinstance(user_settings, dict):
+            raise ToolkitError("Раздел settings в config.yaml должен быть списком «параметр: значение».")
         settings = dict(DEFAULTS)
-        settings.update(cfg.get("settings") or {})
+        settings.update(user_settings)
         if "max_output_tokens" in profile:  # профиль может переопределить
             settings["max_output_tokens"] = profile["max_output_tokens"]
         for key in DEFAULTS:
@@ -122,9 +181,16 @@ def main():
             settings["timeout_seconds"],
         )
         if args.command == "review":
+            from report import has_findings_at_or_above
             from review import run_review
             print(f"Профиль: {name}, модель: {profile['model']}")
-            run_review(provider, name, args.path, settings, BASE_DIR / "output")
+            result = run_review(provider, name, args.path, settings, BASE_DIR / "output",
+                                assume_yes=args.yes, fmt=args.format, output=args.output,
+                                excludes=args.exclude or [],
+                                changed=(args.base or "HEAD") if args.changed else None)
+            if args.fail_on and result is not None and has_findings_at_or_above(result.rows, args.fail_on):
+                print(f"Есть проблемы уровня {args.fail_on} и выше, код возврата 2.", file=sys.stderr)
+                sys.exit(2)
     except ToolkitError as exc:
         print(f"\nОшибка: {exc}", file=sys.stderr)
         sys.exit(1)

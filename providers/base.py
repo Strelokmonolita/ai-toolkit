@@ -1,8 +1,18 @@
 """Базовый класс провайдера и общие ошибки."""
 
+from typing import NamedTuple
+
 
 class ToolkitError(Exception):
     """Ошибка с понятным текстом на русском. Её показываем пользователю как есть."""
+
+
+class Reply(NamedTuple):
+    """Ответ нейросети на один запрос."""
+
+    text: str
+    usage: dict  # {"input": ..., "output": ...} и, у anthropic, разбивка по кэшу
+    truncated: bool = False  # ответ оборвался на пределе max_output_tokens
 
 
 class Provider:
@@ -17,7 +27,7 @@ class Provider:
         self.timeout = timeout
 
     def send(self, system, messages):
-        """Отправить запрос. Вернуть (text, usage).
+        """Отправить запрос. Вернуть Reply(text, usage, truncated).
 
         usage = {"input": число токенов на входе, "output": число токенов на выходе}
         """

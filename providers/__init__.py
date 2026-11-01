@@ -1,6 +1,6 @@
 """Выбор провайдера по полю type из config.yaml."""
 
-from .base import Provider, ToolkitError
+from .base import Provider, Reply, ToolkitError
 
 TYPES = ("anthropic", "openai")
 
@@ -22,4 +22,4 @@ def create_provider(profile, api_key, max_output_tokens, timeout):
     )
 
 
-__all__ = ["Provider", "ToolkitError", "create_provider", "TYPES"]
+__all__ = ["Provider", "Reply", "ToolkitError", "create_provider", "TYPES"]

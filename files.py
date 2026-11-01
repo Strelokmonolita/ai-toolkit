@@ -1,6 +1,8 @@
 """Сбор файлов с кодом и деление на части."""
 
+import fnmatch
 import os
+import subprocess
 from pathlib import Path
 
 from providers import ToolkitError
@@ -9,8 +11,13 @@ SKIP_DIRS = {
     ".git", "node_modules", "venv", ".venv", "env", "__pycache__", ".idea",
     ".vscode", "dist", "build", ".mypy_cache", ".pytest_cache", "output",
 }
-# Файлы с секретами и шумом в нейросеть не отправляем.
-SKIP_NAMES = {"package-lock.json", "yarn.lock", "poetry.lock", "config.yaml"}
+# Файлы с секретами и шумом в нейросеть не отправляем. Имена сравниваются без учёта регистра.
+SKIP_NAMES = {
+    "package-lock.json", "yarn.lock", "poetry.lock", "config.yaml",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json",
+    "secrets.json", ".npmrc", ".pypirc", ".netrc", ".htpasswd",
+}
+SECRET_EXT = {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".env"}
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".pdf", ".zip",
     ".rar", ".7z", ".tar", ".gz", ".exe", ".dll", ".so", ".bin", ".pyc", ".class",
@@ -25,6 +32,12 @@ def est_tokens(text):
     return len(text) // 3 + 1
 
 
+def _is_secret(name):
+    name = name.lower()
+    return (name.startswith(".env") or name in SKIP_NAMES
+            or Path(name).suffix in SECRET_EXT)
+
+
 def _is_binary(path):
     if path.suffix.lower() in BINARY_EXT:
         return True
@@ -32,13 +45,78 @@ def _is_binary(path):
         return b"\0" in f.read(4096)
 
 
-def collect_files(target):
-    """Возвращает (список (путь, текст), число пропущенных файлов)."""
+def _git(args, cwd, error):
+    """Запускает git и возвращает вывод. При сбое бросает ToolkitError: error + текст от git."""
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        raise ToolkitError("Не найден git. Установи git или не используй --changed.")
+    if proc.returncode != 0:
+        raise ToolkitError(f"{error} {(proc.stderr or '').strip()}".strip())
+    return proc.stdout
+
+
+def changed_files(target, ref):
+    """Абсолютные пути файлов, изменённых относительно ref, и новых неотслеживаемых.
+
+    Удалённые файлы сюда попадают; их отсеивает вызывающий код.
+    """
+    if ref.startswith("-"):
+        raise ToolkitError(f"Неверный REF для --changed: «{ref}».")
+    start = target if target.is_dir() else target.parent
+    top = Path(_git(["rev-parse", "--show-toplevel"], start,
+                    "Папка не находится в git-репозитории.").strip())
+    # -z: имена разделены нулевым байтом и не берутся в кавычки (кириллица в путях).
+    diff = _git(["diff", "--name-only", "-z", ref, "--"], top,
+                f"Не удалось сравнить с REF «{ref}».")
+    others = _git(["ls-files", "--others", "--exclude-standard", "-z"], top,
+                  "Не удалось получить список новых файлов.")
+    names = {name for name in (diff + others).split("\0") if name}
+    return sorted((top / name).resolve() for name in names)
+
+
+def _changed_candidates(target, ref):
+    """Изменённые файлы внутри target как пары (путь, имя относительно target)."""
+    scope = target.resolve()
+    candidates = []
+    for path in changed_files(target, ref):
+        if not path.is_file():  # удалённый файл
+            continue
+        if target.is_file():
+            if path == scope:
+                candidates.append((path, target.name))
+            continue
+        try:
+            rel = path.relative_to(scope).as_posix()
+        except ValueError:  # файл вне проверяемой папки
+            continue
+        if SKIP_DIRS.intersection(rel.split("/")[:-1]):
+            continue
+        candidates.append((path, rel))
+    return candidates
+
+
+def _excluded(rel, patterns):
+    """Совпадает с шаблоном сам путь или любой путь внутри папки: tests и tests/ исключают tests/."""
+    return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(rel, p.rstrip("/") + "/*")
+               for p in patterns)
+
+
+def collect_files(target, excludes=(), changed=None):
+    """Возвращает (список (путь, текст), число пропущенных файлов).
+
+    excludes - glob-шаблоны (fnmatch) относительно проверяемой папки.
+    changed - git-ref: тогда берутся только файлы, изменённые относительно него.
+    """
     target = Path(target)
     if not target.exists():
         raise ToolkitError(f"Путь не найден: {target}")
+    patterns = [p.replace("\\", "/") for p in excludes]
 
-    if target.is_file():
+    if changed is not None:
+        candidates = _changed_candidates(target, changed)
+    elif target.is_file():
         candidates = [(target, target.name)]
     else:
         candidates = []
@@ -50,12 +128,21 @@ def collect_files(target):
 
     found, skipped = [], 0
     for path, rel in candidates:
-        name = path.name
-        if (name.startswith(".env") or name in SKIP_NAMES
-                or path.stat().st_size > MAX_FILE_BYTES or _is_binary(path)):
+        if _excluded(rel, patterns):
             skipped += 1
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        if _is_secret(path.name):
+            skipped += 1
+            continue
+        try:
+            # Нечитаемый файл или битая ссылка не должны ронять всю проверку.
+            if path.stat().st_size > MAX_FILE_BYTES or _is_binary(path):
+                skipped += 1
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skipped += 1
+            continue
         if text.strip():
             found.append((rel, text))
     return found, skipped
