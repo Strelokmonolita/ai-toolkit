@@ -124,6 +124,7 @@ def build_parser():
                      help="проверить только файлы, изменённые относительно --base (git)")
     rev.add_argument("--base", metavar="REF", default=None,
                      help="git-ref для --changed, по умолчанию HEAD; без --changed не работает")
+    rev.set_defaults(_parser=rev)  # main() вызывает его error(), чтобы показать usage review
     sub.add_parser("profiles", help="показать профили из конфига",
                    parents=[common(True)])
     return parser
@@ -155,7 +156,7 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "base", None) and not args.changed:
-        parser.error("--base нужен вместе с --changed")
+        args._parser.error("--base нужен вместе с --changed")
 
     try:
         cfg = load_config(Path(args.config))

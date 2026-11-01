@@ -421,6 +421,7 @@ class ChangedFlagTest(unittest.TestCase):
         code, _, err = run_main_for_flags("review", "p", "--base", "main")
         self.assertEqual(code, 1)
         self.assertIn("--changed", err)
+        self.assertIn("review [-h]", err)
 
     def test_no_changed_files_prints_message_and_exit_0(self):
         tmp = tempfile.TemporaryDirectory()
