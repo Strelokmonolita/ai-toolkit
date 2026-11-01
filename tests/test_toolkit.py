@@ -231,6 +231,46 @@ class ReviewFlagsTest(unittest.TestCase):
         data = json.loads(report.read_text(encoding="utf-8"))
         self.assertIn("issues", data)
 
+    def test_json_has_severity_code_and_int_line(self):
+        report = self.dir / "report.json"
+        self.run_review(FakeProvider(["Средняя | src.py | 1 | баг | фикс"]),
+                        "-y", "--format", "json", "--output", str(report))
+        issue = json.loads(report.read_text(encoding="utf-8"))["issues"][0]
+        self.assertEqual(issue["severity"], "medium")
+        self.assertEqual(issue["line"], 1)
+
+    def test_fail_on_gives_2_when_level_found(self):
+        out_file = str(self.dir / "r.md")
+        code, _, _ = self.run_review(FakeProvider(["Высокая | src.py | 1 | баг | фикс"]),
+                                     "-y", "--fail-on", "high", "--output", out_file)
+        self.assertEqual(code, 2)
+
+    def test_fail_on_counts_higher_levels(self):
+        out_file = str(self.dir / "r.md")
+        code, _, _ = self.run_review(FakeProvider(["средняя | src.py | 1 | баг | фикс"]),
+                                     "-y", "--fail-on", "medium", "--output", out_file)
+        self.assertEqual(code, 2)
+
+    def test_fail_on_ignores_lower_levels(self):
+        out_file = str(self.dir / "r.md")
+        code, _, _ = self.run_review(FakeProvider(["Низкая | src.py | 1 | стиль | фикс"]),
+                                     "-y", "--fail-on", "medium", "--output", out_file)
+        self.assertEqual(code, 0)
+
+    def test_no_fail_on_gives_0_with_findings(self):
+        out_file = str(self.dir / "r.md")
+        code, _, _ = self.run_review(FakeProvider(["Высокая | src.py | 1 | баг | фикс"]),
+                                     "-y", "--output", out_file)
+        self.assertEqual(code, 0)
+
+    def test_program_error_gives_1_even_with_fail_on(self):
+        provider = mock.Mock(model="m", max_output_tokens=4096)
+        provider.send.side_effect = ToolkitError("сеть недоступна")
+        out_file = str(self.dir / "r.md")
+        code, _, err = self.run_review(provider, "-y", "--fail-on", "low", "--output", out_file)
+        self.assertEqual(code, 1)
+        self.assertIn("Ошибка:", err)
+
 
 if __name__ == "__main__":
     unittest.main()

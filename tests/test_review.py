@@ -35,12 +35,12 @@ class ParseResponseTest(unittest.TestCase):
     def test_parses_rows(self):
         text = "Высокая | a.py | 14 | SQL-инъекция | параметры запроса\nНизкая | b.py | 3 | x | y"
         rows = review.parse_response(text)
-        self.assertEqual(rows[0], ("Высокая", "a.py", "14", "SQL-инъекция", "параметры запроса"))
+        self.assertEqual(rows[0], ("high", "a.py", "14", "SQL-инъекция", "параметры запроса"))
         self.assertEqual(len(rows), 2)
 
     def test_strips_bullets_and_backticks(self):
         rows = review.parse_response("- Средняя | a.py | 1 | проблема | фикс")
-        self.assertEqual(rows[0][0], "Средняя")
+        self.assertEqual(rows[0][0], "medium")
 
     def test_pipe_inside_problem_is_kept(self):
         rows = review.parse_response("Высокая | a.py | 2 | a | b ошибка | исправить")
@@ -57,7 +57,7 @@ class ParseResponseTest(unittest.TestCase):
 
     def test_markdown_table_with_outer_pipes(self):
         rows = review.parse_response("| Высокая | a.py | 5 | баг | фикс |")
-        self.assertEqual(rows, [("Высокая", "a.py", "5", "баг", "фикс")])
+        self.assertEqual(rows, [("high", "a.py", "5", "баг", "фикс")])
 
     def test_malformed_row_is_reported_not_dropped(self):
         rows, malformed = review.split_response(
@@ -80,7 +80,7 @@ class ReviewChunksTest(unittest.TestCase):
         logs = []
         provider = FakeProvider(["Высокая | a.py | 1 | баг | фикс", "ПРОБЛЕМ НЕТ"])
         result = review.review_chunks(provider, "prof", "t", ["a", "b"], log=logs.append)
-        self.assertEqual(result.rows, [("Высокая", "a.py", "1", "баг", "фикс")])
+        self.assertEqual(result.rows, [("high", "a.py", "1", "баг", "фикс")])
         self.assertEqual((result.usage["input"], result.usage["output"]), (20, 10))
         self.assertEqual((result.profile, result.model, result.n_chunks), ("prof", "fake-model", 2))
         self.assertEqual(logs, ["Часть 1 из 2...", "Часть 2 из 2..."])

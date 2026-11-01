@@ -108,6 +108,8 @@ def build_parser():
     rev.add_argument("--output", metavar="PATH",
                      help="файл отчёта (или папка, если путь существует как папка)")
     rev.add_argument("--format", choices=("md", "json"), default="md", help="формат отчёта")
+    rev.add_argument("--fail-on", choices=("high", "medium", "low"), default=None,
+                     help="код возврата 2, если есть находки этого уровня или выше")
     sub.add_parser("profiles", help="показать профили из конфига",
                    parents=[common(True)])
     return parser
@@ -161,10 +163,14 @@ def main(argv=None):
             settings["timeout_seconds"],
         )
         if args.command == "review":
+            from report import has_findings_at_or_above
             from review import run_review
             print(f"Профиль: {name}, модель: {profile['model']}")
-            run_review(provider, name, args.path, settings, BASE_DIR / "output",
-                       assume_yes=args.yes, fmt=args.format, output=args.output)
+            result = run_review(provider, name, args.path, settings, BASE_DIR / "output",
+                                assume_yes=args.yes, fmt=args.format, output=args.output)
+            if args.fail_on and result is not None and has_findings_at_or_above(result.rows, args.fail_on):
+                print(f"Есть проблемы уровня {args.fail_on} и выше, код возврата 2.", file=sys.stderr)
+                sys.exit(2)
     except ToolkitError as exc:
         print(f"\nОшибка: {exc}", file=sys.stderr)
         sys.exit(1)

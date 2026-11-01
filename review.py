@@ -5,7 +5,7 @@ from pathlib import Path
 
 from files import build_chunks, collect_files, est_tokens
 from providers import ToolkitError
-from report import BREAKDOWN, ReviewResult, build_json, build_report
+from report import BREAKDOWN, ReviewResult, build_json, build_report, severity_code
 
 SYSTEM = (
     "Ты опытный ревьюер кода. Найди реальные проблемы: баги, уязвимости, "
@@ -48,7 +48,7 @@ def split_response(text):
         problem = " | ".join(parts[3:-1])
         if sev.lower().startswith("важность"):  # заголовок таблицы
             continue
-        rows.append((sev, file_, lineno, problem, fix))
+        rows.append((severity_code(sev), file_, lineno, problem, fix))
     return rows, malformed
 
 
@@ -152,7 +152,7 @@ def run_review(provider, profile_name, target, settings, out_dir,
     print(f"Ответ - до {settings['max_output_tokens']} токенов на каждую часть.")
     if not assume_yes and not confirm("Отправить в нейросеть? (y/n): "):
         print("Отменено, ничего не отправлено.")
-        return
+        return None
 
     result = review_chunks(provider, profile_name, target, chunks, log=print)
     path = save_report(result, out_dir, fmt, output)
@@ -165,3 +165,4 @@ def run_review(provider, profile_name, target, settings, out_dir,
             print(f"  {label}: {usage[k]}")
     if result.errors:
         raise ToolkitError("Проверка прервана раньше времени, в отчёте только то, что успело проверить.")
+    return result
