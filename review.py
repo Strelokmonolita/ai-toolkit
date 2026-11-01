@@ -5,7 +5,7 @@ from pathlib import Path
 
 from files import build_chunks, collect_files, est_tokens
 from providers import ToolkitError
-from report import BREAKDOWN, ReviewResult, build_report
+from report import BREAKDOWN, ReviewResult, build_json, build_report
 
 SYSTEM = (
     "Ты опытный ревьюер кода. Найди реальные проблемы: баги, уязвимости, "
@@ -22,6 +22,7 @@ SYSTEM = (
 )
 _SEPARATOR = re.compile(r"[\s|:\-]+")  # строка вида |---|---|
 REPORT_NAME = "review_report.md"
+FORMATS = {"md": ("review_report.md", build_report), "json": ("review_report.json", build_json)}
 
 
 def split_response(text):
@@ -105,12 +106,23 @@ def review_chunks(provider, profile_name, target, chunks, log=None):
     return result
 
 
-def save_report(result, out_dir):
-    """Записывает отчёт в out_dir и возвращает путь к файлу."""
-    path = Path(out_dir) / REPORT_NAME
+def report_path(out_dir, fmt="md", output=None):
+    """Куда писать отчёт: --output (файл или существующая папка) или out_dir/имя по умолчанию."""
+    name = FORMATS[fmt][0]
+    if output is None:
+        return Path(out_dir) / name
+    path = Path(output)
+    if path.is_dir() or str(output).endswith(("/", "\\")):
+        return path / name
+    return path
+
+
+def save_report(result, out_dir, fmt="md", output=None):
+    """Записывает отчёт и возвращает путь к файлу."""
+    path = report_path(out_dir, fmt, output)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(build_report(result), encoding="utf-8")
+        path.write_text(FORMATS[fmt][1](result), encoding="utf-8")
     except OSError as exc:
         raise ToolkitError(f"Не удалось сохранить отчёт в {path}: {exc}")
     return path
@@ -126,7 +138,8 @@ def confirm(question):
     return answer.strip().lower() in ("y", "yes", "д", "да")
 
 
-def run_review(provider, profile_name, target, settings, out_dir):
+def run_review(provider, profile_name, target, settings, out_dir,
+               assume_yes=False, fmt="md", output=None):
     files, skipped = collect_files(target)
     if not files:
         raise ToolkitError("В этом пути нет текстовых файлов с кодом для проверки.")
@@ -137,12 +150,12 @@ def run_review(provider, profile_name, target, settings, out_dir):
     print(f"Частей: {len(chunks)}")
     print(f"Примерно токенов на входе: ~{est_in} (это грубая оценка)")
     print(f"Ответ - до {settings['max_output_tokens']} токенов на каждую часть.")
-    if not confirm("Отправить в нейросеть? (y/n): "):
+    if not assume_yes and not confirm("Отправить в нейросеть? (y/n): "):
         print("Отменено, ничего не отправлено.")
         return
 
     result = review_chunks(provider, profile_name, target, chunks, log=print)
-    path = save_report(result, out_dir)
+    path = save_report(result, out_dir, fmt, output)
     usage = result.usage
     print(f"\nОтчёт сохранён: {path}")
     print(f"Потрачено токенов: input {usage['input']}, output {usage['output']}")

@@ -1,5 +1,6 @@
 """Результат проверки и его оформление в виде отчёта."""
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -83,3 +84,21 @@ def build_report(result):
                 "Модель ответила не по шаблону, вот её текст без изменений:", "",
                 "~~~text", raw, "~~~", ""]
     return "\n".join(out)
+
+
+def build_json(result):
+    """JSON-отчёт по ReviewResult (те же данные, что в markdown)."""
+    keys = ("severity", "file", "line", "problem", "fix")
+    data = {
+        "date": f"{datetime.now():%Y-%m-%d %H:%M}",
+        "target": result.target,
+        "profile": result.profile,
+        "model": result.model,
+        "chunks": result.n_chunks,
+        "usage": result.usage,
+        "errors": result.errors,
+        "warnings": result.warnings,
+        "issues": [dict(zip(keys, r)) for r in sorted(result.rows, key=lambda r: severity_rank(r[0]))],
+        "raw_blocks": [{"chunk": part, "text": raw} for part, raw in result.raw_blocks],
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2)

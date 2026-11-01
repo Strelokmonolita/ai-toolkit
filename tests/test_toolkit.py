@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -6,6 +9,7 @@ from unittest import mock
 
 import toolkit
 from providers import ToolkitError
+from tests.test_review import FakeProvider
 
 PROFILE = {"type": "openai", "base_url": "https://api.example.com", "key_env": "TEST_KEY",
            "model": "m"}
@@ -91,6 +95,141 @@ class LoadConfigTest(unittest.TestCase):
     def test_ok(self):
         cfg = self.load("profiles:\n  a:\n    type: openai\n")
         self.assertIn("a", cfg["profiles"])
+
+
+CONFIG = """default_profile: a
+profiles:
+  a:
+    type: openai
+    base_url: https://a.example.com
+    key_env: KEY_A
+    model: m1
+  b:
+    type: openai
+    base_url: https://b.example.com
+    key_env: KEY_B
+    model: m2
+"""
+
+
+class CliTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.config = self.dir / "config.yaml"
+        self.config.write_text(CONFIG, encoding="utf-8")
+        self.code_dir = self.dir / "empty_project"
+        self.code_dir.mkdir()
+        (self.code_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    def run_main(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                toolkit.main(list(argv))
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_version(self):
+        code, out, _ = self.run_main("--version")
+        self.assertEqual(code, 0)
+        self.assertIn("0.2.0", out)
+
+    def test_profiles_lists_profiles_from_config(self):
+        code, out, _ = self.run_main("--config", str(self.config), "profiles")
+        self.assertEqual(code, 0)
+        self.assertIn("a (по умолчанию): type=openai, model=m1", out)
+        self.assertIn("b: type=openai, model=m2", out)
+
+    def test_profile_before_subcommand_with_review(self):
+        env = {"KEY_A": "ka", "KEY_B": "kb"}
+        with mock.patch.dict(os.environ, env), mock.patch("toolkit.create_provider") as create:
+            code, out, _ = self.run_main("--config", str(self.config), "--profile", "b",
+                                         "review", str(self.code_dir))
+        self.assertEqual(code, 1)
+        self.assertIn("Профиль: b, модель: m2", out)
+        self.assertEqual(create.call_args[0][0]["model"], "m2")
+
+    def test_profile_and_config_after_review(self):
+        env = {"KEY_A": "ka", "KEY_B": "kb"}
+        with mock.patch.dict(os.environ, env), mock.patch("toolkit.create_provider") as create:
+            code, out, _ = self.run_main("review", str(self.code_dir),
+                                         "--profile", "b", "--config", str(self.config))
+        self.assertEqual(code, 1)
+        self.assertIn("Профиль: b, модель: m2", out)
+        self.assertEqual(create.call_args[0][0]["model"], "m2")
+
+    def test_empty_folder_gives_clear_error_and_exit_1(self):
+        env = {"KEY_A": "ka"}
+        with mock.patch.dict(os.environ, env), mock.patch("toolkit.create_provider"):
+            code, _, err = self.run_main("--config", str(self.config), "review", str(self.code_dir))
+        self.assertEqual(code, 1)
+        self.assertIn("Ошибка:", err)
+        self.assertNotIn("Traceback", err)
+
+
+class ReviewFlagsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.config = self.dir / "config.yaml"
+        self.config.write_text(CONFIG, encoding="utf-8")
+        self.project = self.dir / "project"
+        self.project.mkdir()
+        (self.project / "src.py").write_text("x = 1\n", encoding="utf-8")
+        self.env = mock.patch.dict(os.environ, {"KEY_A": "ka"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def run_review(self, provider, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with mock.patch("toolkit.create_provider", return_value=provider), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                toolkit.main(["--config", str(self.config), "review", str(self.project), *argv])
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_yes_flag_skips_input(self):
+        provider = FakeProvider(["ПРОБЛЕМ НЕТ"])
+        report = self.dir / "report.md"
+        with mock.patch("builtins.input", side_effect=AssertionError("input() вызван")) as ask:
+            code, _, _ = self.run_review(provider, "-y", "--output", str(report))
+        self.assertEqual(code, 0)
+        ask.assert_not_called()
+        self.assertEqual(len(provider.calls), 1)
+        self.assertTrue(report.exists())
+
+    def test_output_to_file_path(self):
+        report = self.dir / "custom" / "my_report.md"
+        code, _, _ = self.run_review(FakeProvider(["ПРОБЛЕМ НЕТ"]),
+                                     "-y", "--output", str(report))
+        self.assertEqual(code, 0)
+        self.assertTrue(report.is_file())
+        self.assertIn("Проблем в таблице нет.", report.read_text(encoding="utf-8"))
+
+    def test_output_to_existing_directory(self):
+        folder = self.dir / "reports"
+        folder.mkdir()
+        code, _, _ = self.run_review(FakeProvider(["ПРОБЛЕМ НЕТ"]),
+                                     "-y", "--output", str(folder))
+        self.assertEqual(code, 0)
+        self.assertTrue((folder / "review_report.md").is_file())
+
+    def test_format_json_is_valid(self):
+        row = "Высокая | src.py | 1 | баг | фикс"
+        report = self.dir / "report.json"
+        code, _, _ = self.run_review(FakeProvider([row]), "-y", "--format", "json",
+                                     "--output", str(report))
+        self.assertEqual(code, 0)
+        data = json.loads(report.read_text(encoding="utf-8"))
+        self.assertIn("issues", data)
 
 
 if __name__ == "__main__":

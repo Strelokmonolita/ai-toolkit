@@ -11,6 +11,7 @@ from pathlib import Path
 from providers import TYPES, ToolkitError, create_provider
 
 BASE_DIR = Path(__file__).resolve().parent
+VERSION = "0.2.0"
 DEFAULTS = {"chunk_tokens": 30000, "max_output_tokens": 4096, "timeout_seconds": 120}
 
 
@@ -84,7 +85,43 @@ def positive_int(settings, name):
         raise ToolkitError(f"В config.yaml параметр {name} должен быть целым числом больше 0.")
 
 
-def main():
+def build_parser():
+    # Общие флаги нужны и до, и после подкоманды. У подкоманд default=SUPPRESS,
+    # чтобы не затирать значение, заданное до подкоманды.
+    def common(suppress):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("--profile", default=argparse.SUPPRESS if suppress else None,
+                       help="имя профиля из config.yaml")
+        p.add_argument("--config", default=argparse.SUPPRESS if suppress else str(BASE_DIR / "config.yaml"),
+                       help="путь к конфигу")
+        return p
+
+    parser = argparse.ArgumentParser(description="ai-toolkit: работа с любой нейросетью",
+                                     parents=[common(False)])
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    sub = parser.add_subparsers(dest="command", required=True)
+    rev = sub.add_parser("review", help="проверить код файла или папки",
+                         parents=[common(True)])
+    rev.add_argument("path", help="файл или папка")
+    rev.add_argument("-y", "--yes", action="store_true",
+                     help="не задавать вопросов, сразу отправлять в нейросеть")
+    rev.add_argument("--output", metavar="PATH",
+                     help="файл отчёта (или папка, если путь существует как папка)")
+    rev.add_argument("--format", choices=("md", "json"), default="md", help="формат отчёта")
+    sub.add_parser("profiles", help="показать профили из конфига",
+                   parents=[common(True)])
+    return parser
+
+
+def list_profiles(cfg):
+    default = cfg.get("default_profile") or next(iter(cfg["profiles"]))
+    for name, profile in cfg["profiles"].items():
+        profile = profile if isinstance(profile, dict) else {}
+        mark = " (по умолчанию)" if name == default else ""
+        print(f"{name}{mark}: type={profile.get('type', '?')}, model={profile.get('model', '?')}")
+
+
+def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")
@@ -99,16 +136,13 @@ def main():
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description="ai-toolkit: работа с любой нейросетью")
-    parser.add_argument("--profile", default=None, help="имя профиля из config.yaml")
-    parser.add_argument("--config", default=str(BASE_DIR / "config.yaml"), help="путь к конфигу")
-    sub = parser.add_subparsers(dest="command", required=True)
-    rev = sub.add_parser("review", help="проверить код файла или папки")
-    rev.add_argument("path", help="файл или папка")
-    args = parser.parse_args()
+    args = build_parser().parse_args(argv)
 
     try:
         cfg = load_config(Path(args.config))
+        if args.command == "profiles":
+            list_profiles(cfg)
+            return
         name = args.profile or cfg.get("default_profile") or next(iter(cfg["profiles"]))
         profile = get_profile(cfg, name)
 
@@ -129,7 +163,8 @@ def main():
         if args.command == "review":
             from review import run_review
             print(f"Профиль: {name}, модель: {profile['model']}")
-            run_review(provider, name, args.path, settings, BASE_DIR / "output")
+            run_review(provider, name, args.path, settings, BASE_DIR / "output",
+                       assume_yes=args.yes, fmt=args.format, output=args.output)
     except ToolkitError as exc:
         print(f"\nОшибка: {exc}", file=sys.stderr)
         sys.exit(1)
