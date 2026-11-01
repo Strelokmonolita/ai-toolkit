@@ -2,11 +2,13 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import files
 import toolkit
 from providers import ToolkitError
 from tests.test_review import FakeProvider
@@ -287,6 +289,122 @@ class ReviewFlagsTest(unittest.TestCase):
         code, _, err = self.run_review(provider, "-y", "--fail-on", "low", "--output", out_file)
         self.assertEqual(code, 1)
         self.assertIn("Ошибка:", err)
+
+
+class CollectFilesTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def write(self, rel, text="x = 1\n"):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def fake_git(self, diff="", others="", rev_code=0, diff_code=0):
+        def run(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return subprocess.CompletedProcess(cmd, rev_code, f"{self.root}\n", "fatal: нет репо")
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, diff_code, diff, "fatal: bad revision")
+            return subprocess.CompletedProcess(cmd, 0, others, "")
+        return mock.patch("files.subprocess.run", side_effect=run)
+
+    def test_exclude_patterns_count_as_skipped(self):
+        self.write("src/a.py")
+        self.write("tests/test_a.py")
+        self.write("b.log")
+        found, skipped = files.collect_files(self.root, excludes=["tests/*", "*.log"])
+        self.assertEqual({rel for rel, _ in found}, {"src/a.py"})
+        self.assertEqual(skipped, 2)
+
+    def test_exclude_accepts_backslash_pattern(self):
+        self.write("tests/test_a.py")
+        self.write("src/a.py")
+        found, _ = files.collect_files(self.root, excludes=["tests\\*"])
+        self.assertEqual({rel for rel, _ in found}, {"src/a.py"})
+
+    def test_changed_uses_diff_and_untracked_and_skips_deleted(self):
+        for rel in ("changed.py", "sub/x.py", "new.py", "other/o.py"):
+            self.write(rel)
+        with self.fake_git(diff="changed.py\0sub/x.py\0gone.py\0", others="new.py\0"):
+            found, skipped = files.collect_files(self.root, changed="HEAD")
+        self.assertEqual({rel for rel, _ in found}, {"changed.py", "sub/x.py", "new.py"})
+        self.assertEqual(skipped, 0)
+
+    def test_changed_limited_to_target_folder(self):
+        self.write("sub/x.py")
+        self.write("changed.py")
+        with self.fake_git(diff="sub/x.py\0changed.py\0"):
+            found, _ = files.collect_files(self.root / "sub", changed="HEAD")
+        self.assertEqual([rel for rel, _ in found], ["x.py"])
+
+    def test_changed_applies_exclude_and_text_filter(self):
+        self.write("a.py")
+        self.write("b.log")
+        self.write("img.bin", "\0\1")
+        with self.fake_git(diff="a.py\0b.log\0img.bin\0"):
+            found, skipped = files.collect_files(self.root, excludes=["*.log"], changed="HEAD")
+        self.assertEqual([rel for rel, _ in found], ["a.py"])
+        self.assertEqual(skipped, 2)
+
+    def test_not_git_repo_is_error(self):
+        self.write("a.py")
+        with self.fake_git(rev_code=128):
+            with self.assertRaisesRegex(ToolkitError, "git-репозитории"):
+                files.collect_files(self.root, changed="HEAD")
+
+    def test_bad_ref_is_error(self):
+        self.write("a.py")
+        with self.fake_git(diff_code=128):
+            with self.assertRaisesRegex(ToolkitError, "nope"):
+                files.collect_files(self.root, changed="nope")
+
+    def test_ref_starting_with_dash_is_refused_without_git(self):
+        with mock.patch("files.subprocess.run") as run:
+            with self.assertRaises(ToolkitError):
+                files.collect_files(self.root, changed="--output=x")
+        run.assert_not_called()
+
+    def test_missing_git_is_error(self):
+        with mock.patch("files.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(ToolkitError, "git"):
+                files.collect_files(self.root, changed="HEAD")
+
+
+class ChangedFlagTest(unittest.TestCase):
+    def test_flags_parse(self):
+        args = toolkit.build_parser().parse_args(
+            ["review", "p", "--exclude", "a", "--exclude", "b", "--changed"])
+        self.assertEqual(args.exclude, ["a", "b"])
+        self.assertEqual(args.changed, "HEAD")
+        self.assertIsNone(toolkit.build_parser().parse_args(["review", "p"]).changed)
+
+    def test_no_changed_files_prints_message_and_exit_0(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        config = root / "config.yaml"
+        config.write_text(CONFIG, encoding="utf-8")
+        project = root / "project"
+        project.mkdir()
+        (project / "src.py").write_text("x = 1\n", encoding="utf-8")
+        provider = FakeProvider(["ПРОБЛЕМ НЕТ"])
+
+        def run(cmd, **kwargs):
+            out = f"{root}\n" if "rev-parse" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"KEY_A": "ka"}), \
+                mock.patch("files.subprocess.run", side_effect=run), \
+                mock.patch("toolkit.create_provider", return_value=provider), \
+                contextlib.redirect_stdout(out):
+            toolkit.main(["--config", str(config), "review", str(project), "--changed"])
+        self.assertIn("Нет изменённых файлов", out.getvalue())
+        self.assertEqual(provider.calls, [])
 
 
 if __name__ == "__main__":

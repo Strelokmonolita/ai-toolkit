@@ -118,6 +118,11 @@ def build_parser():
     rev.add_argument("--format", choices=("md", "json"), default="md", help="формат отчёта")
     rev.add_argument("--fail-on", choices=("high", "medium", "low"), default=None,
                      help="код возврата 2, если есть находки этого уровня или выше")
+    rev.add_argument("--exclude", metavar="PATTERN", action="append",
+                     help="не проверять пути по glob-шаблону (относительно папки); можно несколько раз")
+    rev.add_argument("--changed", nargs="?", const="HEAD", default=None, metavar="REF",
+                     help="проверить только файлы, изменённые относительно REF (по умолчанию HEAD). "
+                          "Путь пиши раньше этого флага, иначе он станет REF")
     sub.add_parser("profiles", help="показать профили из конфига",
                    parents=[common(True)])
     return parser
@@ -175,7 +180,8 @@ def main(argv=None):
             from review import run_review
             print(f"Профиль: {name}, модель: {profile['model']}")
             result = run_review(provider, name, args.path, settings, BASE_DIR / "output",
-                                assume_yes=args.yes, fmt=args.format, output=args.output)
+                                assume_yes=args.yes, fmt=args.format, output=args.output,
+                                excludes=args.exclude or [], changed=args.changed)
             if args.fail_on and result is not None and has_findings_at_or_above(result.rows, args.fail_on):
                 print(f"Есть проблемы уровня {args.fail_on} и выше, код возврата 2.", file=sys.stderr)
                 sys.exit(2)

@@ -139,9 +139,12 @@ def confirm(question):
 
 
 def run_review(provider, profile_name, target, settings, out_dir,
-               assume_yes=False, fmt="md", output=None):
-    files, skipped = collect_files(target)
+               assume_yes=False, fmt="md", output=None, excludes=(), changed=None):
+    files, skipped = collect_files(target, excludes, changed)
     if not files:
+        if changed is not None:
+            print("Нет изменённых файлов")
+            return None
         raise ToolkitError("В этом пути нет текстовых файлов с кодом для проверки.")
 
     chunks = build_chunks(files, settings["chunk_tokens"])
