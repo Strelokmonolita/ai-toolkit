@@ -8,6 +8,7 @@ from unittest import mock
 import review
 from providers import ToolkitError
 from providers.base import Provider, Reply
+from report import ReviewResult
 
 SETTINGS = {"chunk_tokens": 30000, "max_output_tokens": 4096, "timeout_seconds": 120}
 
@@ -74,30 +75,50 @@ class ParseResponseTest(unittest.TestCase):
         self.assertEqual(review.parse_response("Вот мой ответ без таблицы"), [])
 
 
-class BuildReportTest(unittest.TestCase):
-    def usage(self):
-        return {"input": 10, "output": 5, **{k: 0 for k in review.BREAKDOWN}}
+class ReviewChunksTest(unittest.TestCase):
+    def test_collects_rows_usage_and_logs_progress(self):
+        logs = []
+        provider = FakeProvider(["Высокая | a.py | 1 | баг | фикс", "ПРОБЛЕМ НЕТ"])
+        result = review.review_chunks(provider, "prof", "t", ["a", "b"], log=logs.append)
+        self.assertEqual(result.rows, [("Высокая", "a.py", "1", "баг", "фикс")])
+        self.assertEqual((result.usage["input"], result.usage["output"]), (20, 10))
+        self.assertEqual((result.profile, result.model, result.n_chunks), ("prof", "fake-model", 2))
+        self.assertEqual(logs, ["Часть 1 из 2...", "Часть 2 из 2..."])
 
-    def test_sorted_by_severity(self):
-        rows = [("Низкая", "a", "1", "p3", "f"), ("Высокая", "a", "2", "p1", "f"),
-                ("Средняя", "a", "3", "p2", "f")]
-        md = review.build_report("p", "m", "t", rows, [], [], self.usage(), 1)
-        self.assertLess(md.index("p1"), md.index("p2"))
-        self.assertLess(md.index("p2"), md.index("p3"))
+    def test_provider_error_is_recorded_and_stops(self):
+        provider = FakeProvider(["Высокая | a.py | 1 | баг | фикс", ToolkitError("сбой"), "ПРОБЛЕМ НЕТ"])
+        result = review.review_chunks(provider, "p", "t", ["a", "b", "c"])
+        self.assertEqual(len(result.rows), 1)
+        self.assertEqual(result.errors, ["Часть 2: сбой"])
+        self.assertEqual(len(provider.calls), 2)
 
-    def test_pipe_in_cell_is_escaped(self):
-        rows = [("Высокая", "a", "1", "x | y", "f")]
-        md = review.build_report("p", "m", "t", rows, [], [], self.usage(), 1)
-        self.assertIn("x \\| y", md)
+    def test_off_format_and_truncated(self):
+        provider = FakeProvider(["просто текст",
+                                 Reply("ПРОБЛЕМ НЕТ", {"input": 1, "output": 1}, truncated=True)])
+        result = review.review_chunks(provider, "p", "t", ["a", "b"])
+        self.assertEqual(result.raw_blocks, [(1, "просто текст")])
+        self.assertEqual(len(result.warnings), 1)
 
-    def test_no_rows_message_and_errors(self):
-        md = review.build_report("p", "m", "t", [], [], ["Часть 1: сбой"], self.usage(), 1)
-        self.assertIn("Проблем в таблице нет.", md)
-        self.assertIn("## Проверка прервана", md)
+    def test_dedupes_across_chunks(self):
+        row = "Высокая | a.py | 1 | баг | фикс"
+        result = review.review_chunks(FakeProvider([row, row]), "p", "t", ["a", "b"])
+        self.assertEqual(len(result.rows), 1)
 
-    def test_raw_block_is_included(self):
-        md = review.build_report("p", "m", "t", [], [(1, "свободный текст")], [], self.usage(), 1)
-        self.assertIn("свободный текст", md)
+
+class SaveReportTest(unittest.TestCase):
+    def test_writes_file_and_creates_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ReviewResult("p", "m", "t", 1, rows=[("Высокая", "a", "1", "x", "y")])
+            path = review.save_report(result, Path(tmp) / "sub")
+            self.assertEqual(path.name, review.REPORT_NAME)
+            self.assertIn("| Высокая | a | 1 | x | y |", path.read_text(encoding="utf-8"))
+
+    def test_os_error_becomes_toolkit_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "f"
+            blocker.write_text("x", encoding="utf-8")
+            with self.assertRaises(ToolkitError):
+                review.save_report(ReviewResult("p", "m", "t", 1), blocker)
 
 
 class RunReviewTest(unittest.TestCase):
