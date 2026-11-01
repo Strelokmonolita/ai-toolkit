@@ -98,7 +98,9 @@ def _changed_candidates(target, ref):
 
 
 def _excluded(rel, patterns):
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+    """Совпадает с шаблоном сам путь или любой путь внутри папки: tests и tests/ исключают tests/."""
+    return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(rel, p.rstrip("/") + "/*")
+               for p in patterns)
 
 
 def collect_files(target, excludes=(), changed=None):

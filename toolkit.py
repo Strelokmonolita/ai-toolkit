@@ -120,9 +120,10 @@ def build_parser():
                      help="код возврата 2, если есть находки этого уровня или выше")
     rev.add_argument("--exclude", metavar="PATTERN", action="append",
                      help="не проверять пути по glob-шаблону (относительно папки); можно несколько раз")
-    rev.add_argument("--changed", nargs="?", const="HEAD", default=None, metavar="REF",
-                     help="проверить только файлы, изменённые относительно REF (по умолчанию HEAD). "
-                          "Путь пиши раньше этого флага, иначе он станет REF")
+    rev.add_argument("--changed", action="store_true",
+                     help="проверить только файлы, изменённые относительно --base (git)")
+    rev.add_argument("--base", metavar="REF", default=None,
+                     help="git-ref для --changed, по умолчанию HEAD; без --changed не работает")
     sub.add_parser("profiles", help="показать профили из конфига",
                    parents=[common(True)])
     return parser
@@ -151,7 +152,10 @@ def main(argv=None):
         except Exception:
             pass
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "base", None) and not args.changed:
+        parser.error("--base нужен вместе с --changed")
 
     try:
         cfg = load_config(Path(args.config))
@@ -181,7 +185,8 @@ def main(argv=None):
             print(f"Профиль: {name}, модель: {profile['model']}")
             result = run_review(provider, name, args.path, settings, BASE_DIR / "output",
                                 assume_yes=args.yes, fmt=args.format, output=args.output,
-                                excludes=args.exclude or [], changed=args.changed)
+                                excludes=args.exclude or [],
+                                changed=(args.base or "HEAD") if args.changed else None)
             if args.fail_on and result is not None and has_findings_at_or_above(result.rows, args.fail_on):
                 print(f"Есть проблемы уровня {args.fail_on} и выше, код возврата 2.", file=sys.stderr)
                 sys.exit(2)

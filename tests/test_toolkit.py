@@ -215,6 +215,13 @@ class ReviewFlagsTest(unittest.TestCase):
                 code = exc.code
         return code, out.getvalue(), err.getvalue()
 
+    def test_exclude_all_without_changed_is_error_1(self):
+        provider = FakeProvider(["ПРОБЛЕМ НЕТ"])
+        code, _, err = self.run_review(provider, "--exclude", "*.py", "-y")
+        self.assertEqual(code, 1)
+        self.assertIn("нет текстовых файлов", err)
+        self.assertEqual(provider.calls, [])
+
     def test_yes_flag_skips_input(self):
         provider = FakeProvider(["ПРОБЛЕМ НЕТ"])
         report = self.dir / "report.md"
@@ -320,6 +327,15 @@ class CollectFilesTest(unittest.TestCase):
         self.assertEqual({rel for rel, _ in found}, {"src/a.py"})
         self.assertEqual(skipped, 2)
 
+    def test_exclude_folder_with_or_without_slash(self):
+        self.write("tests/a.py")
+        self.write("tests/sub/b.py")
+        self.write("src/a.py")
+        for pattern in ("tests", "tests/"):
+            found, skipped = files.collect_files(self.root, excludes=[pattern])
+            self.assertEqual({rel for rel, _ in found}, {"src/a.py"}, pattern)
+            self.assertEqual(skipped, 2, pattern)
+
     def test_exclude_accepts_backslash_pattern(self):
         self.write("tests/test_a.py")
         self.write("src/a.py")
@@ -374,13 +390,37 @@ class CollectFilesTest(unittest.TestCase):
                 files.collect_files(self.root, changed="HEAD")
 
 
+def run_main_for_flags(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            toolkit.main(list(argv))
+        except SystemExit as exc:
+            code = exc.code
+    return code, out.getvalue(), err.getvalue()
+
+
 class ChangedFlagTest(unittest.TestCase):
     def test_flags_parse(self):
         args = toolkit.build_parser().parse_args(
-            ["review", "p", "--exclude", "a", "--exclude", "b", "--changed"])
+            ["review", "p", "--exclude", "a", "--exclude", "b", "--changed", "--base", "main"])
         self.assertEqual(args.exclude, ["a", "b"])
-        self.assertEqual(args.changed, "HEAD")
-        self.assertIsNone(toolkit.build_parser().parse_args(["review", "p"]).changed)
+        self.assertTrue(args.changed)
+        self.assertEqual(args.base, "main")
+        plain = toolkit.build_parser().parse_args(["review", "p"])
+        self.assertFalse(plain.changed)
+        self.assertIsNone(plain.base)
+
+    def test_changed_before_path_does_not_eat_path(self):
+        args = toolkit.build_parser().parse_args(["review", "--changed", "./proj"])
+        self.assertEqual(args.path, "./proj")
+        self.assertTrue(args.changed)
+
+    def test_base_without_changed_is_exit_1(self):
+        code, _, err = run_main_for_flags("review", "p", "--base", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("--changed", err)
 
     def test_no_changed_files_prints_message_and_exit_0(self):
         tmp = tempfile.TemporaryDirectory()

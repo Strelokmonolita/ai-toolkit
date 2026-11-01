@@ -8,7 +8,7 @@
 - [x] Этап 4: CLI
   - [x] 4a: CLI флаги (--version, --profile, --config, -y, --output, --format, команда profiles)
   - [x] 4b-1: важность кодами high/medium/low, line числом (null, если не число), --fail-on (код 2)
-  - [x] 4b-2: --exclude PATTERN (glob, можно несколько раз), --changed [REF] (git diff + новые файлы)
+  - [x] 4b-2: --exclude PATTERN (glob, можно несколько раз, папки целиком), --changed (флаг) с --base REF (git diff + новые файлы)
 - [ ] Этап 5: документация
 
 ## Дополнения
