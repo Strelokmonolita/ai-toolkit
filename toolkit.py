@@ -85,6 +85,14 @@ def positive_int(settings, name):
         raise ToolkitError(f"В config.yaml параметр {name} должен быть целым числом больше 0.")
 
 
+class _Parser(argparse.ArgumentParser):
+    """При ошибке аргументов выходит с кодом 1: код 2 оставлен за --fail-on."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: ошибка: {message}\n")
+
+
 def build_parser():
     # Общие флаги нужны и до, и после подкоманды. У подкоманд default=SUPPRESS,
     # чтобы не затирать значение, заданное до подкоманды.
@@ -96,7 +104,7 @@ def build_parser():
                        help="путь к конфигу")
         return p
 
-    parser = argparse.ArgumentParser(description="ai-toolkit: работа с любой нейросетью",
+    parser = _Parser(description="ai-toolkit: работа с любой нейросетью",
                                      parents=[common(False)])
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)

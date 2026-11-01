@@ -170,6 +170,23 @@ class CliTest(unittest.TestCase):
         self.assertIn("Ошибка:", err)
         self.assertNotIn("Traceback", err)
 
+    def test_bad_fail_on_value_gives_1(self):
+        code, _, err = self.run_main("--config", str(self.config), "review", str(self.code_dir),
+                                     "--fail-on", "critical")
+        self.assertEqual(code, 1)
+        self.assertIn("critical", err)
+
+    def test_bad_format_value_gives_1(self):
+        code, _, err = self.run_main("--config", str(self.config), "review", str(self.code_dir),
+                                     "--format", "xml")
+        self.assertEqual(code, 1)
+        self.assertIn("xml", err)
+
+    def test_unknown_flag_gives_1(self):
+        code, _, _ = self.run_main("--config", str(self.config), "review", str(self.code_dir),
+                                   "--nope")
+        self.assertEqual(code, 1)
+
 
 class ReviewFlagsTest(unittest.TestCase):
     def setUp(self):
