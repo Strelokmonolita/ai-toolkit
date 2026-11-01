@@ -9,8 +9,13 @@ SKIP_DIRS = {
     ".git", "node_modules", "venv", ".venv", "env", "__pycache__", ".idea",
     ".vscode", "dist", "build", ".mypy_cache", ".pytest_cache", "output",
 }
-# Файлы с секретами и шумом в нейросеть не отправляем.
-SKIP_NAMES = {"package-lock.json", "yarn.lock", "poetry.lock", "config.yaml"}
+# Файлы с секретами и шумом в нейросеть не отправляем. Имена сравниваются без учёта регистра.
+SKIP_NAMES = {
+    "package-lock.json", "yarn.lock", "poetry.lock", "config.yaml",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json",
+    "secrets.json", ".npmrc", ".pypirc", ".netrc", ".htpasswd",
+}
+SECRET_EXT = {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".env"}
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".pdf", ".zip",
     ".rar", ".7z", ".tar", ".gz", ".exe", ".dll", ".so", ".bin", ".pyc", ".class",
@@ -23,6 +28,12 @@ MAX_FILE_BYTES = 500_000
 def est_tokens(text):
     """Грубая оценка токенов: ~1 токен на 3 символа (с запасом)."""
     return len(text) // 3 + 1
+
+
+def _is_secret(name):
+    name = name.lower()
+    return (name.startswith(".env") or name in SKIP_NAMES
+            or Path(name).suffix in SECRET_EXT)
 
 
 def _is_binary(path):
@@ -50,12 +61,18 @@ def collect_files(target):
 
     found, skipped = [], 0
     for path, rel in candidates:
-        name = path.name
-        if (name.startswith(".env") or name in SKIP_NAMES
-                or path.stat().st_size > MAX_FILE_BYTES or _is_binary(path)):
+        if _is_secret(path.name):
             skipped += 1
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            # Нечитаемый файл или битая ссылка не должны ронять всю проверку.
+            if path.stat().st_size > MAX_FILE_BYTES or _is_binary(path):
+                skipped += 1
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skipped += 1
+            continue
         if text.strip():
             found.append((rel, text))
     return found, skipped

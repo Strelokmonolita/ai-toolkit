@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from files import build_chunks, collect_files, est_tokens
 from providers import ToolkitError
@@ -44,6 +45,30 @@ class CollectFilesTest(unittest.TestCase):
         files, skipped = collect_files(self.root)
         self.assertEqual(self.names(files), ["ok.py"])
         self.assertEqual(skipped, 5)  # .env, .env.local, config.yaml, logo.png, data.bin2
+
+    def test_skips_keys_and_credentials(self):
+        self.write("ok.py")
+        for name in ("server.pem", "tls.KEY", "id_rsa", "credentials.json", "prod.env",
+                     "Config.yaml", ".npmrc"):
+            self.write(name, "secret")
+        files, skipped = collect_files(self.root)
+        self.assertEqual(self.names(files), ["ok.py"])
+        self.assertEqual(skipped, 7)
+
+    def test_unreadable_file_is_skipped_not_fatal(self):
+        self.write("ok.py")
+        self.write("bad.py")
+        real_read = Path.read_text
+
+        def fake_read(path, *a, **kw):
+            if path.name == "bad.py":
+                raise PermissionError("нет доступа")
+            return real_read(path, *a, **kw)
+
+        with mock.patch.object(Path, "read_text", fake_read):
+            files, skipped = collect_files(self.root)
+        self.assertEqual(self.names(files), ["ok.py"])
+        self.assertEqual(skipped, 1)
 
     def test_empty_files_are_ignored(self):
         self.write("empty.py", "  \n")

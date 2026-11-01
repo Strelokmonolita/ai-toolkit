@@ -1,6 +1,6 @@
 """Провайдер для OpenAI-совместимых API: OpenAI, DeepSeek, OpenRouter, Ollama, LM Studio."""
 
-from .base import Provider, ToolkitError, translate_error
+from .base import Provider, Reply, ToolkitError, translate_error
 
 
 class OpenAIProvider(Provider):
@@ -33,11 +33,12 @@ class OpenAIProvider(Provider):
 
         if not resp.choices:
             raise ToolkitError("Нейросеть вернула пустой ответ.")
-        text = resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        text = choice.message.content or ""
         u = resp.usage
         # Некоторые локальные серверы не присылают usage - тогда будет 0.
         usage = {
             "input": getattr(u, "prompt_tokens", 0) or 0,
             "output": getattr(u, "completion_tokens", 0) or 0,
         }
-        return text, usage
+        return Reply(text, usage, truncated=choice.finish_reason == "length")

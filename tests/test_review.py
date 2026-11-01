@@ -7,7 +7,7 @@ from unittest import mock
 
 import review
 from providers import ToolkitError
-from providers.base import Provider
+from providers.base import Provider, Reply
 
 SETTINGS = {"chunk_tokens": 30000, "max_output_tokens": 4096, "timeout_seconds": 120}
 
@@ -25,7 +25,9 @@ class FakeProvider(Provider):
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return reply, {"input": 10, "output": 5}
+        if isinstance(reply, Reply):
+            return reply
+        return Reply(reply, {"input": 10, "output": 5})
 
 
 class ParseResponseTest(unittest.TestCase):
@@ -48,9 +50,25 @@ class ParseResponseTest(unittest.TestCase):
         text = "Важность | Файл | Строка | Проблема | Исправление"
         self.assertEqual(review.parse_response(text), [])
 
-    @unittest.expectedFailure  # известный баг v0.1, исправляется на этапе 2
     def test_skips_table_separator(self):
-        self.assertEqual(review.parse_response("--- | --- | --- | --- | ---"), [])
+        for sep in ("--- | --- | --- | --- | ---", "|---|---|---|---|---|", "|:--|:-:|--:|---|---|"):
+            self.assertEqual(review.parse_response(sep), [], sep)
+
+    def test_markdown_table_with_outer_pipes(self):
+        rows = review.parse_response("| Высокая | a.py | 5 | баг | фикс |")
+        self.assertEqual(rows, [("Высокая", "a.py", "5", "баг", "фикс")])
+
+    def test_malformed_row_is_reported_not_dropped(self):
+        rows, malformed = review.split_response(
+            "Высокая | a.py | 5 | баг | фикс\nСредняя | b.py | 7 | без исправления")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(malformed, ["Средняя | b.py | 7 | без исправления"])
+
+    def test_dedupe_ignores_case_spaces_and_fix_text(self):
+        rows = [("Высокая", "a.py", "5", "SQL  инъекция", "один"),
+                ("Средняя", "A.py", "5", "sql инъекция", "другой"),
+                ("Высокая", "a.py", "6", "SQL инъекция", "один")]
+        self.assertEqual(len(review.dedupe(rows)), 2)
 
     def test_ignores_free_text(self):
         self.assertEqual(review.parse_response("Вот мой ответ без таблицы"), [])
@@ -127,6 +145,42 @@ class RunReviewTest(unittest.TestCase):
         with self.assertRaises(ToolkitError):
             self.run_review(provider)
         self.assertIn("Проверка прервана", self.report())
+
+    def test_truncated_reply_adds_warning(self):
+        provider = FakeProvider([Reply("Высокая | src.py | 1 | баг | фикс",
+                                       {"input": 1, "output": 1}, truncated=True)])
+        self.run_review(provider)
+        report = self.report()
+        self.assertIn("## Предупреждения", report)
+        self.assertIn("max_output_tokens", report)
+
+    def test_malformed_lines_land_in_raw_block(self):
+        self.run_review(FakeProvider(["Высокая | src.py | 1 | баг | фикс\nСредняя | src.py | 2 | без фикса"]))
+        report = self.report()
+        self.assertIn("| Высокая | src.py | 1 | баг | фикс |", report)
+        self.assertIn("Средняя | src.py | 2 | без фикса", report)
+
+    def test_duplicates_across_chunks_are_merged(self):
+        row = "Высокая | src.py | 1 | баг | фикс"
+        with mock.patch("review.build_chunks", return_value=["a", "b"]):
+            self.run_review(FakeProvider([row, row]))
+        self.assertEqual(self.report().count("| Высокая | src.py | 1 | баг | фикс |"), 1)
+
+    def test_closed_stdin_cancels_without_sending(self):
+        provider = FakeProvider([])
+        with mock.patch("builtins.input", side_effect=EOFError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            review.run_review(provider, "prof", str(self.src), SETTINGS, self.out)
+        self.assertEqual(provider.calls, [])
+
+    def test_report_write_failure_is_toolkit_error(self):
+        blocker = self.root / "blocker"
+        blocker.write_text("файл на месте папки", encoding="utf-8")
+        with mock.patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ToolkitError):
+                review.run_review(FakeProvider(["ПРОБЛЕМ НЕТ"]), "p", str(self.src),
+                                  SETTINGS, blocker)
 
     def test_no_text_files_raises(self):
         empty = self.root / "empty_dir"

@@ -42,6 +42,8 @@ def get_profile(cfg, name):
             f"Профиль '{name}' не найден в config.yaml. Есть: {', '.join(profiles)}."
         )
     profile = profiles[name]
+    if not isinstance(profile, dict):
+        raise ToolkitError(f"Профиль '{name}' в config.yaml должен содержать поля type, base_url и т.д.")
     for field in ("type", "base_url", "key_env", "model"):
         if not profile.get(field):
             raise ToolkitError(f"В профиле '{name}' не заполнено поле {field}.")
@@ -110,8 +112,11 @@ def main():
         name = args.profile or cfg.get("default_profile") or next(iter(cfg["profiles"]))
         profile = get_profile(cfg, name)
 
+        user_settings = cfg.get("settings") or {}
+        if not isinstance(user_settings, dict):
+            raise ToolkitError("Раздел settings в config.yaml должен быть списком «параметр: значение».")
         settings = dict(DEFAULTS)
-        settings.update(cfg.get("settings") or {})
+        settings.update(user_settings)
         if "max_output_tokens" in profile:  # профиль может переопределить
             settings["max_output_tokens"] = profile["max_output_tokens"]
         for key in DEFAULTS:

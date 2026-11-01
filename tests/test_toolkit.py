@@ -34,6 +34,10 @@ class GetProfileTest(unittest.TestCase):
         with self.assertRaisesRegex(ToolkitError, "base_url"):
             toolkit.get_profile(self.cfg(base_url="api.example.com"), "p")
 
+    def test_empty_profile_body(self):
+        with self.assertRaisesRegex(ToolkitError, "должен содержать"):
+            toolkit.get_profile({"profiles": {"p": None}}, "p")
+
     def test_url_is_stripped(self):
         p = toolkit.get_profile(self.cfg(base_url="  https://a.b  "), "p")
         self.assertEqual(p["base_url"], "https://a.b")
